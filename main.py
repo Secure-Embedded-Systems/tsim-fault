@@ -16,34 +16,31 @@ class Tsim():
         self.q = select.poll()
         self.q.register(self.stdout, select.POLLIN)
         self.done = False
-        self.correct_output = ''
 
         self.lpc = 0
-
-        self.start = 'main'
-        self.end = 0x40000000
-
         self.output_regex = re.compile('{(.*)}',flags=re.DOTALL)
         
         self.read(20)
 
     def read(self,lines):
         s = []
-        l = self.q.poll(300)
+        l = self.q.poll(1)
         #print l
         if not l:
-            return None
+            l = self.q.poll(2)
+            if not l:
+                return None
 
         for i in range(0,lines):
             l = self.stdout.readline()
-            print l[:len(l)-1]
+            #print l[:len(l)-1]
             while l[0] == '#':
                 l = self.stdout.readline()
             s.append(l)
         return s
 
     def write(self, s):
-        print '>', s
+        #print '>', s
         self.tsim.stdin.write(s)
 
     def refresh_regs(self):
@@ -52,6 +49,8 @@ class Tsim():
         rf=self.read(17)
         #rf = rf.splitlines()
 
+        if 'LOCALS' in rf[2]:
+            rf = rf[1:]
         regs = rf[2:2+7]
         special = rf[11]
 
@@ -64,16 +63,18 @@ class Tsim():
         for i in regs:
             self.iregs.append(int(i[7:7+8],16))
             self.lregs.append(int(i[15+3:18+8],16))
-            self.oregs.append(int(i[24+3:27+8],16))
-            self.gregs.append(int(i[35+3:38+8],16))
+            self.oregs.append(int(i[29:29+8],16))
+            self.gregs.append(int(i[40:40+8],16))
 
         self.sregs.append(int(special[6:6+8],16))
-        self.sregs.append(int(special[23:23+8],16))
-        self.sregs.append(int(special[39:39+8],16))
-        self.sregs.append(int(special[53:53+8],16))
+        self.sregs.append(int(special[22:22+8],16))
+        self.sregs.append(int(special[38:38+8],16))
+        self.sregs.append(int(special[52:52+8],16))
 
         self.pc = int(rf[13][6:6+8],16)
         self.npc = int(rf[14][6:6+8],16)
+        self.pc_instr = rf[13][26:len(rf[13])-2]
+        self.npc_instr = rf[14][26:len(rf[14])-2]
 
         #print 'i:', [hex(x) for x in self.iregs]
         #print 'l:', [hex(x) for x in self.lregs]
@@ -104,9 +105,9 @@ class Tsim():
             return self.sregs[3]
 
         if reg == 'pc':
-            self.pc
+            return self.pc
         if reg == 'npc':
-            self.npc
+            return self.npc
 
         raise ValueError('invalid register: ',reg)
 
@@ -123,7 +124,7 @@ class Tsim():
         func_or_addr = str(func_or_addr)
         self.write('break '+func_or_addr+'\n')
         l = self.read(1)[0]
-        print 'substring on : ', l
+        #print 'substring on : ', l
         bp_num = int(l[10:l.index('at')-1])
         self.write('run\n')
         self.read(1)[0]
@@ -146,57 +147,44 @@ class Tsim():
             addr = int(l[11:19+1],16)
             if 'nop' not in l:
                 instr = l[31:l.index('\t')]
-                args = l[l.index('\t')+1:len(l)-1]
+                args = l[l.index('\t')+1:len(l)-2]
             else:
                 instr = 'nop'
                 args = ''
 
             self.lpc = addr
 
-            print hex(addr), instr, args
-            return args
+            return addr, instr, args
         except:
             if 'Program exited normally.' in l:
                 print 'Program finished'
                 self.done = True
             else:
                 raise RuntimeError('unknown string: '+l)
-
-    def set_start(self, func_or_addr):
-        self.start = func_or_addr
-
-    def set_end(self, func_or_addr):
-        self.end = self.resolve_label(func_or_addr)
-
     def cont(self,):
         self.write('cont\n')
-
-    def set_correct_output(self,out):
-        self.correct_output = out
-
     def check_output(self,):
         out = ''
         l = self.read(1)
         i = 0
-        extra = 0
         while 'Program exited normally.' not in out:
             i += 1
             if l is not None:
                 out += l[0]
                 l = self.read(1)
             if 'IU in error mode' in out:
+                self.match = 'IU in error mode'
                 return False
             if i > 20:
-                self.write('bt\n')
-                extra =2
+                break
 
-        if extra: self.read(extra)
 
         match = ''
         try:
             match = self.output_regex.search(out).group(1)
         except:
-            raise RuntimeError('No {} tag found in output: '+out)
+            match = '(no output)'
+            #raise RuntimeError('No {} tag found in output: '+out)
 
         self.match = match
 
@@ -227,53 +215,14 @@ class Tsim():
 
 
                 
-
-    def attack(self,):
-        iterations = 20
-
-        for i in range(0, iterations):
-            regi = i
-            regs = []
-            faults = 1
-            self.run_until(self.start)
-            while self.lpc != self.end and faults > 0:
-                args = self.step()
-                self.refresh_regs()
-
-                # put fault stuff here
-                
-                regs += self.get_registers(args)
-
-                if len(regs) > regi:
-                    val = self.read_reg(regs[regi])
-                    
-                    # inject a bit flip
-                    ra = random.randint(0,31)
-                    val ^= (1<<ra)
-                    self.write_reg(regs[regi], val)
-
-                    regi += 1
-                    faults -= 1
-
-
-
-            self.cont()
-
-            if self.check_output():
-                print 'output is correct (%s)' % self.match
-            else:
-                print 'output is incorrect (%s)' % self.match
-
-            self.reset()
-
     def reset(self,):
         self.write('reset\n')
-        while self.read(1) != None: pass
+        self.write('bt\n')
+        l = self.read(1)
+        while l != None and '%pc          %sp' not in l[0]:
+            l = self.read(1)
+        #self.lpc = 0
 
-
-    def set_range(self, func_or_addr_start, func_or_addr_end):
-        self.set_start(func_or_addr_start)
-        self.set_end(func_or_addr_end)
 
     def resolve_label(self, label):
         try:
@@ -288,6 +237,91 @@ class Tsim():
             return addr
 
 
+class FaultInjector(Tsim):
+    def __init__(self,progname, **kwargs):
+        Tsim.__init__(self,progname)
+        self.start = 'main'
+        self.end = 0x40000000
+        self.correct_output = ''
+
+        self.num_faults = kwargs.get('num_faults',1)
+        self.num_bits = kwargs.get('num_bits',1)
+        self.num_skips = kwargs.get('num_skips',0)
+
+
+    def set_range(self, func_or_addr_start, func_or_addr_end):
+        self.set_start(func_or_addr_start)
+        self.set_end(func_or_addr_end)
+
+    def set_start(self, func_or_addr):
+        self.start = func_or_addr
+
+    def set_end(self, func_or_addr):
+        self.end = self.resolve_label(func_or_addr)
+
+    def set_correct_output(self,out):
+        self.correct_output = out
+
+
+
+    def attack(self,):
+        iterations = 20
+
+        for i in range(0, iterations):
+            regi = i
+            instri = i
+            regs = []
+            instr = 1
+            faults = self.num_faults
+            self.run_until(self.start)
+            while self.lpc != self.end and faults > 0:
+                (addr, opcode, args) = self.step()
+                print addr,opcode,args
+                self.refresh_regs()
+
+                # put fault stuff here
+                if self.num_skips and instr > instri:
+                    npc = self.read_reg('npc')
+                    for i in range(1,self.num_skips):
+                        npc += 4
+                    self.write_reg('pc',npc)
+                    faults -= 1
+                    print self.pc, self.pc_instr, "(skipped +"+str(self.num_skips-1)+')'
+                    print 'pc -> ', npc
+
+
+                regs += self.get_registers(args)
+
+                if self.num_bits and len(regs) > regi:
+                    val = self.read_reg(regs[regi])
+                    
+                    # inject a bit flip
+                    fval = val
+                    for j in range(0,self.num_bits):
+                        ra = random.randint(0,31)
+                        fval = val ^ (1<<ra)
+                    self.write_reg(regs[regi], fval)
+
+                    print '%s: %s -> %s' % (regs[regi], hex(val), hex(fval))
+                    self.refresh_regs()
+
+                    regi += 1
+                    faults -= 1
+
+                instr += 1
+
+            self.cont()
+
+            if self.check_output():
+                print 'output is correct (%s)' % self.match
+                print
+            else:
+                print 'output is incorrect (%s)' % self.match
+                print
+
+            self.reset()
+
+
 
 def run():
     argv = sys.argv
@@ -295,11 +329,11 @@ def run():
         sys.stderr.write('usage: %s <binary> <fault-file>\n' % argv[0])
         sys.exit(1)
 
-    tsim = Tsim(argv[1])
-    tsim.set_correct_output('ans = 6')
-    tsim.set_range('main', 0x40001944)
+    fi = FaultInjector(argv[1], num_bits=0, num_skips=2)
+    fi.set_correct_output('ans = 6')
+    fi.set_range('main', 0x40001944)
 
-    tsim.attack()
+    fi.attack()
 
 
 
