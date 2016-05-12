@@ -174,7 +174,7 @@ class Tsim():
                 l = self.read(1)
             if 'IU in error mode' in out:
                 self.match = 'IU in error mode'
-                return False
+                return 3
             if i > 20:
                 break
 
@@ -183,14 +183,15 @@ class Tsim():
         try:
             match = self.output_regex.search(out).group(1)
         except:
-            match = '(no output)'
+            self.match = '(no output)'
+            return 2
             #raise RuntimeError('No {} tag found in output: '+out)
 
         self.match = match
 
         if match == self.correct_output:
-            return True
-        return False
+            return 0
+        return 1
 
     def get_registers(self,s):
         regs = []
@@ -221,7 +222,7 @@ class Tsim():
         l = self.read(1)
         while l != None and '%pc          %sp' not in l[0]:
             l = self.read(1)
-        #self.lpc = 0
+        self.lpc = 0
 
 
     def resolve_label(self, label):
@@ -249,6 +250,36 @@ class FaultInjector(Tsim):
         self.num_skips = kwargs.get('num_skips',0)
 
 
+        self.report = []
+        self.coverage = 0
+        self.num_faulty = 0
+        self.num_correct = 0
+        self.iteration = 0
+
+    def add_record(self, iteration, instr_num, output, faulty, ftype, addr, instru, reg_affected, origval, faultyval):
+        """
+            ftype:
+                0: correct output
+                1: incorrect output
+                2: no output
+                3: processor crashed
+        """
+        useful = 0
+        if ftype == 1:
+            useful = 1
+
+        self.report.append([iteration, instr_num, output, faulty, ftype, addr, instru, reg_affected, origval, faultyval, useful])
+
+    def produce_report(self,):
+        print 'num_faults\tnum_skips\tnum_bits\tcoverage\tinstructions in range'
+        print '\t'.join([str(self.num_faults),str(self.num_skips),str(self.num_bits),
+                str(self.num_correct * 1.0 / (self.num_correct+self.num_faulty)),
+                str(self.range_count)])
+        print 'iteration\tinstrution #\toutput\tvalid\ttype\tPC\tinstruction\tregister affected\toriginal value\tfaulty value\tuseful'
+        for i in self.report:
+            print '\t'.join([str(x) for x in i])
+
+
     def set_range(self, func_or_addr_start, func_or_addr_end):
         self.set_start(func_or_addr_start)
         self.set_end(func_or_addr_end)
@@ -265,32 +296,44 @@ class FaultInjector(Tsim):
 
 
     def attack(self,):
-        iterations = 20
 
-        for i in range(0, iterations):
+        atEndOfRange = False
+        i = 0
+        while not atEndOfRange:
             regi = i
             instri = i
             regs = []
             instr = 1
             faults = self.num_faults
             self.run_until(self.start)
+            self.range_count = 0
             while self.lpc != self.end and faults > 0:
+                self.range_count += 1
                 (addr, opcode, args) = self.step()
                 print addr,opcode,args
+                faulted_instruction = ''
+                faulted_pc = 0
+
+                register_affected = -1
+                origval = 0
+                faultval = 0
+
                 self.refresh_regs()
 
                 # put fault stuff here
                 if self.num_skips and instr > instri:
                     npc = self.read_reg('npc')
-                    for i in range(1,self.num_skips):
+                    for j in range(1,self.num_skips):
                         npc += 4
                     self.write_reg('pc',npc)
                     faults -= 1
+                    faulted_instruction = self.pc_instr
+                    faulted_pc = self.pc
                     print self.pc, self.pc_instr, "(skipped +"+str(self.num_skips-1)+')'
                     print 'pc -> ', npc
 
-
-                regs += self.get_registers(args)
+                new_regs = self.get_registers(args)
+                regs += new_regs
 
                 if self.num_bits and len(regs) > regi:
                     val = self.read_reg(regs[regi])
@@ -301,9 +344,15 @@ class FaultInjector(Tsim):
                         ra = random.randint(0,31)
                         fval = val ^ (1<<ra)
                     self.write_reg(regs[regi], fval)
+                    faulted_instruction = opcode+' '+args
+                    faulted_pc = addr
 
                     print '%s: %s -> %s' % (regs[regi], hex(val), hex(fval))
                     self.refresh_regs()
+
+                    register_affected = -(len(regs)-len(new_regs) - regi)
+                    origval = val
+                    faultval = fval
 
                     regi += 1
                     faults -= 1
@@ -311,29 +360,45 @@ class FaultInjector(Tsim):
                 instr += 1
 
             self.cont()
-
-            if self.check_output():
+            ftype = self.check_output()
+            correct = 1
+            if ftype == 0:
+                self.num_correct += 1
                 print 'output is correct (%s)' % self.match
                 print
             else:
+                correct = 0
+                self.num_faulty += 1
                 print 'output is incorrect (%s)' % self.match
                 print
+            self.add_record(self.iteration, i, self.match, correct, ftype, faulted_pc, faulted_instruction,
+                            register_affected, origval, faultval)
+            i += 1
+            atEndOfRange = (self.lpc == self.end)
 
             self.reset()
+
+        self.iteration += 1 
 
 
 
 def run():
     argv = sys.argv
-    if len(argv) < 2:
-        sys.stderr.write('usage: %s <binary> <fault-file>\n' % argv[0])
+    if len(argv) != 6:
+        sys.stderr.write('usage: %s <binary> <num-faults> <num-bits> <num-skips> <iterations>\n' % argv[0])
         sys.exit(1)
 
-    fi = FaultInjector(argv[1], num_bits=0, num_skips=2)
+    num_faults = int(argv[2])
+    num_bits = int(argv[3])
+    num_skips = int(argv[4])
+    iterations = int(argv[5])
+
+    fi = FaultInjector(argv[1], num_faults=num_faults, num_bits=num_bits, num_skips=num_skips)
     fi.set_correct_output('ans = 6')
     fi.set_range('main', 0x40001944)
 
-    fi.attack()
+    for j in range(0,iterations): fi.attack()
+    fi.produce_report()
 
 
 
