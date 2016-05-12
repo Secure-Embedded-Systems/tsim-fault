@@ -1,7 +1,8 @@
 #!/bin/python
-import sys,os,select
-import subprocess, threading, pty
+import sys,os
+import subprocess, threading, pty, select
 import re, random
+import argparse
 
 
 class Tsim():
@@ -382,16 +383,10 @@ class FaultInjector(Tsim):
 
 
 
-def run():
-    argv = sys.argv
-    if len(argv) != 6:
-        sys.stderr.write('usage: %s <binary> <num-faults> <num-bits> <num-skips> <iterations>\n' % argv[0])
-        sys.exit(1)
+def run(num_faults, num_bits, num_skips, iterations, verbose):
 
-    num_faults = int(argv[2])
-    num_bits = int(argv[3])
-    num_skips = int(argv[4])
-    iterations = int(argv[5])
+    argv = sys.argv
+
 
     fi = FaultInjector(argv[1], num_faults=num_faults, num_bits=num_bits, num_skips=num_skips)
     fi.set_correct_output('ans = 6')
@@ -404,4 +399,21 @@ def run():
 
 
 if __name__ == '__main__':
-    run()
+    parser = argparse.ArgumentParser(description='Fault simulator based on tsim-leon3')
+    parser.add_argument('binary', help="the compiled program to simulate")
+    parser.add_argument('--verbose', action='store_true')
+    parser.add_argument('-f', '--fault-count', help='number of consecutive faults to inject (default = %d)' % 1, type=int, default=1)
+    parser.add_argument('-b', '--bit-flips', help='number of random bit flips to inject (default = %d)' % 1, type=int, default=1)
+    parser.add_argument('-s', '--skips', help='number of instructions to skip per fault (default = %d)' % 0, type=int, default=0)
+    parser.add_argument('-i', '--iterations', help='iterations to repeat simulation (default = %d)' % 1, type=int, default=1)
+    args = parser.parse_args()
+    run(args.fault_count, args.bit_flips, args.skips, args.iterations, args.verbose)
+
+
+
+
+
+
+
+
+
