@@ -2,7 +2,7 @@
 # Tsim based Fault Simulator
 
 ### Usage
-
+```bash
 $ python main.py -h
 
 usage: main.py [-h] [--verbose] [-f FAULT_COUNT] [-b BIT_FLIPS] [-s SKIPS]
@@ -25,3 +25,4 @@ optional arguments:
                         number of instructions to skip per fault (default = 0)
   -i ITERATIONS, --iterations ITERATIONS
                         iterations to repeat simulation (default = 1)
+```
