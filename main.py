@@ -11,7 +11,6 @@ class Tsim():
         self.progname = progname
         master, slave = pty.openpty()
         self.tsim = subprocess.Popen(['tsim-leon3',progname], stdin=subprocess.PIPE, stdout=slave)
-        self.stdout_lock = threading.Lock()
         self.stdout_list = []
         self.stdout = os.fdopen(master)
         self.q = select.poll()
@@ -158,7 +157,7 @@ class Tsim():
             return addr, instr, args
         except:
             if 'Program exited normally.' in l:
-                print 'Program finished'
+                sys.stderr.write('Program finished')
                 self.done = True
             else:
                 raise RuntimeError('unknown string: '+l)
@@ -232,7 +231,7 @@ class Tsim():
         except:
             self.write('break '+label + '\n')
             l = self.read(1)[0]
-            print l
+            self.log(l)
             bp_num = int(l[10:l.index('at')-1])
             addr = int(l[l.index(':')-8:l.index(':')],16)
             self.write('del '+str(bp_num)+'\n')
@@ -249,6 +248,8 @@ class FaultInjector(Tsim):
         self.num_faults = kwargs.get('num_faults',1)
         self.num_bits = kwargs.get('num_bits',1)
         self.num_skips = kwargs.get('num_skips',0)
+        self.data_error = kwargs.get('data_error',0)
+        self.verbose = kwargs.get('verbose',False)
 
 
         self.report = []
@@ -294,6 +295,15 @@ class FaultInjector(Tsim):
     def set_correct_output(self,out):
         self.correct_output = out
 
+    def get_error(self, val):
+        fval = val
+        if self.data_error == 0:
+            for j in range(0,self.num_bits):
+                ra = random.randint(0,31)
+                fval = fval ^ (1<<ra)
+            return fval
+        else:
+            return (val ^ self.data_error)
 
 
     def attack(self,):
@@ -311,7 +321,7 @@ class FaultInjector(Tsim):
             while self.lpc != self.end and faults > 0:
                 self.range_count += 1
                 (addr, opcode, args) = self.step()
-                print addr,opcode,args
+                self.log(str(addr)+" "+str(opcode) +" "+args)
                 faulted_instruction = ''
                 faulted_pc = 0
 
@@ -330,8 +340,8 @@ class FaultInjector(Tsim):
                     faults -= 1
                     faulted_instruction = self.pc_instr
                     faulted_pc = self.pc
-                    print self.pc, self.pc_instr, "(skipped +"+str(self.num_skips-1)+')'
-                    print 'pc -> ', npc
+                    self.log(self.pc +' '+ self.pc_instr +' '+"(skipped +"+str(self.num_skips-1)+')')
+                    self.log('pc -> '+' '+ str(npc))
 
                 new_regs = self.get_registers(args)
                 regs += new_regs
@@ -340,15 +350,12 @@ class FaultInjector(Tsim):
                     val = self.read_reg(regs[regi])
                     
                     # inject a bit flip
-                    fval = val
-                    for j in range(0,self.num_bits):
-                        ra = random.randint(0,31)
-                        fval = val ^ (1<<ra)
+                    fval = self.get_error(val)
                     self.write_reg(regs[regi], fval)
                     faulted_instruction = opcode+' '+args
                     faulted_pc = addr
 
-                    print '%s: %s -> %s' % (regs[regi], hex(val), hex(fval))
+                    self.log('%s: %s -> %s' % (regs[regi], hex(val), hex(fval)))
                     self.refresh_regs()
 
                     register_affected = -(len(regs)-len(new_regs) - regi)
@@ -365,13 +372,13 @@ class FaultInjector(Tsim):
             correct = 1
             if ftype == 0:
                 self.num_correct += 1
-                print 'output is correct (%s)' % self.match
-                print
+                self.log('output is correct (%s)' % self.match)
+                self.log('')
             else:
                 correct = 0
                 self.num_faulty += 1
-                print 'output is incorrect (%s)' % self.match
-                print
+                self.log('output is incorrect (%s)' % self.match)
+                self.log('')
             self.add_record(self.iteration, i, self.match, correct, ftype, faulted_pc, faulted_instruction,
                             register_affected, origval, faultval)
             i += 1
@@ -381,14 +388,19 @@ class FaultInjector(Tsim):
 
         self.iteration += 1 
 
+    def log(self, s):
+        if self.verbose:
+            sys.stderr.write(str(s)+'\n')
 
 
-def run(num_faults, num_bits, num_skips, iterations, verbose):
+def run(num_faults, num_bits, num_skips, iterations, err, verbose):
 
     argv = sys.argv
 
 
-    fi = FaultInjector(argv[1], num_faults=num_faults, num_bits=num_bits, num_skips=num_skips)
+    fi = FaultInjector(argv[1], num_faults=num_faults, num_bits=num_bits, num_skips=num_skips,
+                        data_error=err, verbose=verbose)
+
     fi.set_correct_output('ans = 6')
     fi.set_range('main', 0x40001944)
 
@@ -399,15 +411,22 @@ def run(num_faults, num_bits, num_skips, iterations, verbose):
 
 
 if __name__ == '__main__':
-    parser = argparse.ArgumentParser(description='Fault simulator based on tsim-leon3')
+    parser = argparse.ArgumentParser(description='Fault simulator based on tsim-leon3', epilog="""
+    Copy and paste reports to a spreedsheet program.
+
+    known issues:
+        there is a subtle race condition between reading tsim output and tsim actually outputing that
+        causes an exception.  just restart it.
+    """)
     parser.add_argument('binary', help="the compiled program to simulate")
     parser.add_argument('--verbose', action='store_true')
     parser.add_argument('-f', '--fault-count', help='number of consecutive faults to inject (default = %d)' % 1, type=int, default=1)
-    parser.add_argument('-b', '--bit-flips', help='number of random bit flips to inject (default = %d)' % 1, type=int, default=1)
+    parser.add_argument('-b', '--bit-flips', help='number of random bit flips to inject (if -d == 0) (default = %d)' % 1, type=int, default=1)
     parser.add_argument('-s', '--skips', help='number of instructions to skip per fault (default = %d)' % 0, type=int, default=0)
     parser.add_argument('-i', '--iterations', help='iterations to repeat simulation (default = %d)' % 1, type=int, default=1)
+    parser.add_argument('-d', '--data', help='data to XOR for induced fault error (0 means random bit) (default = %d)' % 0, type=int, default=0)
     args = parser.parse_args()
-    run(args.fault_count, args.bit_flips, args.skips, args.iterations, args.verbose)
+    run(args.fault_count, args.bit_flips, args.skips, args.iterations, args.data, args.verbose)
 
 
 
