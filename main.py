@@ -1,9 +1,29 @@
-#!/bin/python
+#!/usr/bin/python
 import sys,os
-import subprocess, thread, threading, pty, select
+import subprocess, thread, threading, pty, select, signal
 import re, random
 import argparse
 
+class Watchdog:
+    def __init__(self, timeout, userHandler=None):  # timeout in seconds
+        self.timeout = timeout
+        #self.handler = userHandler if userHandler is not None else self.defaultHandler
+        #self.timer = threading.Timer(self.timeout, self.handler)
+        #self.timer.start()
+        signal.signal(signal.SIGALRM, self.defaultHandler)
+        signal.alarm(self.timeout)
+
+    def reset(self):
+        #self.timer.cancel()
+        #self.timer = threading.Timer(self.timeout, self.handler)
+        signal.alarm(self.timeout)
+
+    def stop(self):
+        signal.alarm(0)
+
+    def defaultHandler(self,n,n2):
+        os.stderr.write('WATCHDOG\n')
+        raise self
 
 class Tsim():
     
@@ -12,11 +32,19 @@ class Tsim():
         self.load_tsim()
         self.done = False
         self.lpc = 0
-        self.output_regex = re.compile('{(.*)}',flags=re.DOTALL)
+        self.output_regex = re.compile('{(.*?)}',flags=re.DOTALL)
         
 
     def load_tsim(self,):
         master, slave = pty.openpty()
+        self.master = master
+        self.slave = slave
+
+        #os.close(master)
+        #os.close(slave)
+
+        master, slave = pty.openpty()
+
         self.tsim = subprocess.Popen(['tsim-leon3',self.progname], stdin=subprocess.PIPE, stdout=slave)
         self.stdout = os.fdopen(master)
         self.q = select.poll()
@@ -25,12 +53,17 @@ class Tsim():
 
 
     def kill(self,):
-        self.tsim.kill()
+ 
+       #[os.close(x) for x in self.fds]
+        self.tsim.terminate()
+        os.close(self.master)
+        os.close(self.slave)
+
 
 
     def read(self,lines):
         s = []
-        l = self.q.poll(5)
+        l = self.q.poll(1)
         #print l
         if not l:
             l = self.q.poll(2)
@@ -40,6 +73,7 @@ class Tsim():
         for i in range(0,lines):
 
             l = self.stdout.readline()
+            #print '<',l
             #print l[:len(l)-1]
             while l[0] == '#':
                 l = self.stdout.readline()
@@ -154,35 +188,37 @@ class Tsim():
         if l is None:
             return '','',''
 
-        if len(l[0]) < 3:
-            l = self.read(1)
-            if l is None: 
-                return '','',''
+        #if len(l[0]) < 3:
+            #l = self.read(1)
+            #if l is None: 
+                #return '','',''
 
-        try:
-            l = l[0]
-            addr = int(l[11:19+1],16)
-            if 'nop' not in l:
-                instr = l[31:l.index('\t')]
-                args = l[l.index('\t')+1:len(l)-2]
-            else:
-                instr = 'nop'
-                args = ''
+    #try:
+        l = l[0]
+        addr = int(l[11:19+1],16)
+        if 'nop' not in l:
+            instr = l[31:l.index('\t')]
+            args = l[l.index('\t')+1:len(l)-2]
+        else:
+            instr = 'nop'
+            args = ''
 
-            self.lpc = addr
+        self.lpc = addr
 
-            return addr, instr, args
-        except:
-            if 'Program exited normally.' in l:
-                sys.stderr.write('Program finished')
-                self.done = True
-            else:
-                raise RuntimeError('unknown string: '+l)
+        return addr, instr, args
+    #except:
+        if 'Program exited normally.' in l:
+            sys.stderr.write('Program finished')
+            self.done = True
+        else:
+            raise RuntimeError('unknown string: '+l)
 
     def cont(self,):
         self.write('cont\n')
+
     def check_output(self,):
         out = ''
+
         l = self.read(1)
         i = 0
         while 'Program exited normally.' not in out:
@@ -190,20 +226,26 @@ class Tsim():
             if l is not None:
                 out += l[0]
                 l = self.read(1)
-            if 'IU in error mode' in out:
+            elif 'IU in error mode' in out:
                 self.match = 'IU in error mode'
                 return 3
-            if i > 20:
-                break
-
+            elif i > 200:
+                # this is a hack
+                i = 0
+                self.write('reset\n')
+                self.write('bt\n')
+                l = self.read(1)
+                if l:
+                    out += l[0]
 
         match = ''
-        try:
-            match = self.output_regex.search(out).group(1)
-        except:
-            self.match = '(no output)'
-            return 2
-            #raise RuntimeError('No {} tag found in output: '+out)
+        #try:
+        #print 'output:',out, 'len:',len(out)
+        match = self.output_regex.search(out).group(1)
+    #except:
+        #self.match = '(no output)'
+        #return 2
+        #raise RuntimeError('No {} tag found in output: '+out)
 
         self.match = match
 
@@ -325,13 +367,12 @@ class FaultInjector(Tsim):
 
 
     def attack(self,):
+        timeout_timer = Watchdog(1)
         while True:
             try:
                 atEndOfRange = False
                 i = 0
                 while not atEndOfRange:
-                    timeout_timer = threading.Timer(0.250, thread.interrupt_main)
-                    timeout_timer.start()
                     regi = i
                     instri = i
                     regs = []
@@ -349,7 +390,6 @@ class FaultInjector(Tsim):
                         register_affected = -1
                         origval = 0
                         faultval = 0
-
                         self.refresh_regs()
 
                         # put fault stuff here
@@ -385,13 +425,9 @@ class FaultInjector(Tsim):
 
                             regi += 1
                             faults -= 1
-                        timeout_timer.cancel()
-                        timeout_timer = threading.Timer(0.250, thread.interrupt_main)
-                        timeout_timer.start()
-
 
                         instr += 1
-
+                    
                     self.cont()
                     ftype = self.check_output()
                     correct = 1
@@ -410,30 +446,32 @@ class FaultInjector(Tsim):
                     atEndOfRange = (self.lpc == self.end)
 
                     self.reset()
-                    timeout_timer.cancel()
+                    timeout_timer.reset()
 
                 self.iteration += 1
                 break
-            except KeyboardInterrupt as e:
+
+            except Watchdog as e:
                 print 'timer burned out', e
-                timeout_timer.cancel()
+                timeout_timer.reset()
                 self.reset()
                 pass
+            timeout_timer.stop()
 
     def log(self, s):
         if self.verbose:
             sys.stderr.write(str(s)+'\n')
 
 
-def run(start, end, num_faults, num_bits, num_skips, iterations, err, verbose):
+def run(start, end, num_faults, num_bits, num_skips, iterations, err, verbose, binary, correct):
 
     argv = sys.argv
 
 
-    fi = FaultInjector(argv[1], num_faults=num_faults, num_bits=num_bits, num_skips=num_skips,
+    fi = FaultInjector(binary, num_faults=num_faults, num_bits=num_bits, num_skips=num_skips,
                         data_error=err, verbose=verbose)
 
-    fi.set_correct_output('ans = 6')
+    fi.set_correct_output(correct)
     fi.set_range(start, end)
 
     for j in range(0,iterations): fi.attack()
@@ -451,6 +489,7 @@ if __name__ == '__main__':
         causes an exception.  just restart it.
     """)
     parser.add_argument('binary', help="the compiled program to simulate")
+    parser.add_argument('correct-output', help="the correct output to expect from program")
     parser.add_argument('--verbose', action='store_true')
     parser.add_argument('-f', '--fault-count', help='number of consecutive faults to inject (default = %d)' % 1, type=int, default=1)
     parser.add_argument('-b', '--bit-flips', help='number of random bit flips to inject (if -d == 0) (default = %d)' % 1, type=int, default=1)
@@ -458,9 +497,10 @@ if __name__ == '__main__':
     parser.add_argument('-i', '--iterations', help='iterations to repeat simulation (default = %d)' % 1, type=int, default=1)
     parser.add_argument('-d', '--data', help='data to XOR for induced fault error (0 means random bit) (default = %d)' % 0, type=int, default=0)
     parser.add_argument('-1', '--start', help='starting address or label to inclusively start injecting faults (default = %s)' % 'main', type=str, default='main')
-    parser.add_argument('-2', '--end', help='ending address or label to exclusively end injecting faults (default = %s)' % '0x40001964', type=str, default='0x40001948')
+    parser.add_argument('-2', '--end', help='ending address or label to exclusively end injecting faults (default = %s)' % '0x40001964', type=str, default='0x40001964')
     args = parser.parse_args()
-    run(args.start, args.end, args.fault_count, args.bit_flips, args.skips, args.iterations, args.data, args.verbose)
+    run(args.start, args.end, args.fault_count, args.bit_flips, args.skips, args.iterations, args.data, args.verbose, 
+            args.binary, getattr(args,'correct-output'))
 
 
 
