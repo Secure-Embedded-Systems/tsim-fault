@@ -1,6 +1,6 @@
 #!/bin/python
 import sys,os
-import subprocess, threading, pty, select
+import subprocess, thread, threading, pty, select
 import re, random
 import argparse
 
@@ -9,22 +9,28 @@ class Tsim():
     
     def __init__(self, progname):
         self.progname = progname
-        master, slave = pty.openpty()
-        self.tsim = subprocess.Popen(['tsim-leon3',progname], stdin=subprocess.PIPE, stdout=slave)
-        self.stdout_list = []
-        self.stdout = os.fdopen(master)
-        self.q = select.poll()
-        self.q.register(self.stdout, select.POLLIN)
+        self.load_tsim()
         self.done = False
-
         self.lpc = 0
         self.output_regex = re.compile('{(.*)}',flags=re.DOTALL)
         
+
+    def load_tsim(self,):
+        master, slave = pty.openpty()
+        self.tsim = subprocess.Popen(['tsim-leon3',self.progname], stdin=subprocess.PIPE, stdout=slave)
+        self.stdout = os.fdopen(master)
+        self.q = select.poll()
+        self.q.register(self.stdout, select.POLLIN)
         self.read(20)
+
+
+    def kill(self,):
+        self.tsim.kill()
+
 
     def read(self,lines):
         s = []
-        l = self.q.poll(1)
+        l = self.q.poll(5)
         #print l
         if not l:
             l = self.q.poll(2)
@@ -32,11 +38,14 @@ class Tsim():
                 return None
 
         for i in range(0,lines):
+
             l = self.stdout.readline()
             #print l[:len(l)-1]
             while l[0] == '#':
                 l = self.stdout.readline()
             s.append(l)
+
+
         return s
 
     def write(self, s):
@@ -51,7 +60,7 @@ class Tsim():
 
         if 'LOCALS' in rf[2]:
             rf = rf[1:]
-        regs = rf[2:2+7]
+        regs = rf[2:2+8]
         special = rf[11]
 
         self.iregs = []
@@ -123,24 +132,32 @@ class Tsim():
     def run_until(self, func_or_addr):
         func_or_addr = str(func_or_addr)
         self.write('break '+func_or_addr+'\n')
+        #while True:
+            #try:
         l = self.read(1)[0]
         #print 'substring on : ', l
         bp_num = int(l[10:l.index('at')-1])
         self.write('run\n')
-        self.read(1)[0]
-        self.read(1)[0]
+        self.read(2)
         self.write('del '+str(bp_num)+'\n')
+        return
+                #return
+            #except:
+                #print "RESET"
+                #self.reset()
+                #pass
 
     def step(self,):
         self.write('step\n')
         l = self.read(1)
 
-        if l is None: 
-            return
+        if l is None:
+            return '','',''
 
         if len(l[0]) < 3:
             l = self.read(1)
-            if l is None: return
+            if l is None: 
+                return '','',''
 
         try:
             l = l[0]
@@ -161,6 +178,7 @@ class Tsim():
                 self.done = True
             else:
                 raise RuntimeError('unknown string: '+l)
+
     def cont(self,):
         self.write('cont\n')
     def check_output(self,):
@@ -201,14 +219,17 @@ class Tsim():
             if s[i+1] in 'gilo': 
                 regs.append(s[i+1:i+3])
                 s = s[i+2:]
-            elif s[i+1:i+3] == 'fp':
+            elif s[i+1:i+3] in ['fp','sp']:
                 # frame pointer is i6
                 regs.append('i6')
                 s = s[i+3:]
             elif s[i+1:i+4] in ['psr','wim','tbr']:
                 regs.append(s[i+1:i+4])
                 s = s[i+4:]
+            elif s[i+1:i+3] == 'hi':
+                pass
             else:
+                print hex(self.pc), hex(self.npc)
                 raise ValueError('invalid register: ' + s)
 
         return regs
@@ -217,11 +238,8 @@ class Tsim():
 
                 
     def reset(self,):
-        self.write('reset\n')
-        self.write('bt\n')
-        l = self.read(1)
-        while l != None and '%pc          %sp' not in l[0]:
-            l = self.read(1)
+        self.kill()
+        self.load_tsim()
         self.lpc = 0
 
 
@@ -307,93 +325,107 @@ class FaultInjector(Tsim):
 
 
     def attack(self,):
+        while True:
+            try:
+                atEndOfRange = False
+                i = 0
+                while not atEndOfRange:
+                    timeout_timer = threading.Timer(0.250, thread.interrupt_main)
+                    timeout_timer.start()
+                    regi = i
+                    instri = i
+                    regs = []
+                    instr = 1
+                    faults = self.num_faults
+                    self.run_until(self.start)
+                    self.range_count = 0
+                    while self.lpc != self.end and faults > 0:
+                        self.range_count += 1
+                        (addr, opcode, args) = self.step()
+                        self.log(str(addr)+" "+str(opcode) +" "+args)
+                        faulted_instruction = ''
+                        faulted_pc = 0
 
-        atEndOfRange = False
-        i = 0
-        while not atEndOfRange:
-            regi = i
-            instri = i
-            regs = []
-            instr = 1
-            faults = self.num_faults
-            self.run_until(self.start)
-            self.range_count = 0
-            while self.lpc != self.end and faults > 0:
-                self.range_count += 1
-                (addr, opcode, args) = self.step()
-                self.log(str(addr)+" "+str(opcode) +" "+args)
-                faulted_instruction = ''
-                faulted_pc = 0
+                        register_affected = -1
+                        origval = 0
+                        faultval = 0
 
-                register_affected = -1
-                origval = 0
-                faultval = 0
+                        self.refresh_regs()
 
-                self.refresh_regs()
+                        # put fault stuff here
+                        if self.num_skips and instr > instri:
+                            npc = self.read_reg('npc')
+                            for j in range(1,self.num_skips):
+                                npc += 4
+                            self.write_reg('pc',npc)
+                            faults -= 1
+                            faulted_instruction = self.pc_instr
+                            faulted_pc = self.pc
+                            self.log(self.pc +' '+ self.pc_instr +' '+"(skipped +"+str(self.num_skips-1)+')')
+                            self.log('pc -> '+' '+ str(npc))
 
-                # put fault stuff here
-                if self.num_skips and instr > instri:
-                    npc = self.read_reg('npc')
-                    for j in range(1,self.num_skips):
-                        npc += 4
-                    self.write_reg('pc',npc)
-                    faults -= 1
-                    faulted_instruction = self.pc_instr
-                    faulted_pc = self.pc
-                    self.log(self.pc +' '+ self.pc_instr +' '+"(skipped +"+str(self.num_skips-1)+')')
-                    self.log('pc -> '+' '+ str(npc))
+                        new_regs = self.get_registers(args)
+                        regs += new_regs
 
-                new_regs = self.get_registers(args)
-                regs += new_regs
+                        if self.num_bits and len(regs) > regi:
+                            val = self.read_reg(regs[regi])
+                            
+                            # inject a bit flip
+                            fval = self.get_error(val)
+                            self.write_reg(regs[regi], fval)
+                            faulted_instruction = opcode+' '+args
+                            faulted_pc = addr
 
-                if self.num_bits and len(regs) > regi:
-                    val = self.read_reg(regs[regi])
-                    
-                    # inject a bit flip
-                    fval = self.get_error(val)
-                    self.write_reg(regs[regi], fval)
-                    faulted_instruction = opcode+' '+args
-                    faulted_pc = addr
+                            self.log('%s: %s -> %s' % (regs[regi], hex(val), hex(fval)))
+                            self.refresh_regs()
 
-                    self.log('%s: %s -> %s' % (regs[regi], hex(val), hex(fval)))
-                    self.refresh_regs()
+                            register_affected = -(len(regs)-len(new_regs) - regi)
+                            origval = val
+                            faultval = fval
 
-                    register_affected = -(len(regs)-len(new_regs) - regi)
-                    origval = val
-                    faultval = fval
+                            regi += 1
+                            faults -= 1
+                        timeout_timer.cancel()
+                        timeout_timer = threading.Timer(0.250, thread.interrupt_main)
+                        timeout_timer.start()
 
-                    regi += 1
-                    faults -= 1
 
-                instr += 1
+                        instr += 1
 
-            self.cont()
-            ftype = self.check_output()
-            correct = 1
-            if ftype == 0:
-                self.num_correct += 1
-                self.log('output is correct (%s)' % self.match)
-                self.log('')
-            else:
-                correct = 0
-                self.num_faulty += 1
-                self.log('output is incorrect (%s)' % self.match)
-                self.log('')
-            self.add_record(self.iteration, i, self.match, correct, ftype, faulted_pc, faulted_instruction,
-                            register_affected, origval, faultval)
-            i += 1
-            atEndOfRange = (self.lpc == self.end)
+                    self.cont()
+                    ftype = self.check_output()
+                    correct = 1
+                    if ftype == 0:
+                        self.num_correct += 1
+                        self.log('output is correct (%s)' % self.match)
+                        self.log('')
+                    else:
+                        correct = 0
+                        self.num_faulty += 1
+                        self.log('output is incorrect (%s)' % self.match)
+                        self.log('')
+                    self.add_record(self.iteration, i, self.match, correct, ftype, faulted_pc, faulted_instruction,
+                                    register_affected, origval, faultval)
+                    i += 1
+                    atEndOfRange = (self.lpc == self.end)
 
-            self.reset()
+                    self.reset()
+                    timeout_timer.cancel()
 
-        self.iteration += 1 
+                self.iteration += 1
+                break
+            except KeyboardInterrupt as e:
+                print 'timer burned out', e
+                timeout_timer.cancel()
+                self.reset()
+                pass
 
     def log(self, s):
         if self.verbose:
             sys.stderr.write(str(s)+'\n')
 
 
-def run(num_faults, num_bits, num_skips, iterations, err, verbose):
+def run(start, end, num_faults, num_bits, num_skips, iterations, err, verbose):
 
     argv = sys.argv
 
@@ -402,7 +434,7 @@ def run(num_faults, num_bits, num_skips, iterations, err, verbose):
                         data_error=err, verbose=verbose)
 
     fi.set_correct_output('ans = 6')
-    fi.set_range('main', 0x40001944)
+    fi.set_range(start, end)
 
     for j in range(0,iterations): fi.attack()
     fi.produce_report()
@@ -425,8 +457,10 @@ if __name__ == '__main__':
     parser.add_argument('-s', '--skips', help='number of instructions to skip per fault (default = %d)' % 0, type=int, default=0)
     parser.add_argument('-i', '--iterations', help='iterations to repeat simulation (default = %d)' % 1, type=int, default=1)
     parser.add_argument('-d', '--data', help='data to XOR for induced fault error (0 means random bit) (default = %d)' % 0, type=int, default=0)
+    parser.add_argument('-1', '--start', help='starting address or label to inclusively start injecting faults (default = %s)' % 'main', type=str, default='main')
+    parser.add_argument('-2', '--end', help='ending address or label to exclusively end injecting faults (default = %s)' % '0x40001964', type=str, default='0x40001948')
     args = parser.parse_args()
-    run(args.fault_count, args.bit_flips, args.skips, args.iterations, args.data, args.verbose)
+    run(args.start, args.end, args.fault_count, args.bit_flips, args.skips, args.iterations, args.data, args.verbose)
 
 
 
