@@ -396,8 +396,8 @@ class FaultInjector(Tsim):
                 str(num_no_output * 1.0 / len(self.report)),
                 str(num_incorrect_out * 1.0 / len(self.report)),
                 str(num_crashes * 1.0 / len(self.report)),
-                str(self.control_faults * 1.0 / (self.control_faults + self.data_faults)),
-                str(self.data_faults * 1.0 / (self.control_faults + self.data_faults)),
+                str(self.control_faults * 1.0 / (0.00001+self.control_faults + self.data_faults)),
+                str(self.data_faults * 1.0 / (0.00001+self.control_faults + self.data_faults)),
                 str(self.range_count)])+'\n')
         self.output('iteration\tinstrution #\toutput\tvalid\ttype\tPC\tinstruction\tregister affected\toriginal value\tfaulty value\tuseful\n')
         for i in self.report:
@@ -473,7 +473,7 @@ class FaultInjector(Tsim):
                             faults -= 1
                             faulted_instruction = self.pc_instr
                             faulted_pc = self.pc
-                            self.log(self.pc +' '+ self.pc_instr +' '+"(skipped +"+str(self.num_skips-1)+')')
+                            self.log(str(self.pc) +' '+ str(self.pc_instr) +' '+"(skipped +"+str(self.num_skips-1)+')')
                             self.log('pc -> '+' '+ str(npc))
 
                         new_regs = self.get_registers(args)
