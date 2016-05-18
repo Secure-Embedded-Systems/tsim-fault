@@ -335,6 +335,8 @@ class FaultInjector(Tsim):
         self.num_skips = kwargs.get('num_skips',0)
         self.data_error = kwargs.get('data_error',0)
         self.verbose = kwargs.get('verbose',False)
+        self.output_file = kwargs.get('output_file',sys.stdout)
+        
 
 
         self.report = []
@@ -358,14 +360,34 @@ class FaultInjector(Tsim):
         self.report.append([iteration, instr_num, output, faulty, ftype, addr, instru, reg_affected, origval, faultyval, useful])
 
     def produce_report(self,):
-        print 'num_faults\tnum_skips\tnum_bits\tcoverage\tinstructions in range'
-        print '\t'.join([str(self.num_faults),str(self.num_skips),str(self.num_bits),
-                str(self.num_correct * 1.0 / (self.num_correct+self.num_faulty)),
-                str(self.range_count)])
-        print 'iteration\tinstrution #\toutput\tvalid\ttype\tPC\tinstruction\tregister affected\toriginal value\tfaulty value\tuseful'
+        num_crashes = 0
+        num_no_output = 0
+        num_incorrect_out = 0
+        num_correct = 0
         for i in self.report:
-            print '\t'.join([str(x) for x in i])
+            if i[4] == 3:
+                num_crashes += 1
+            elif i[4] == 2:
+                num_no_output += 1
+            elif i[4] == 1:
+                num_incorrect_out += 1
+            elif i[4] == 0:
+                num_correct += 1
 
+        assert(len(self.report) == (num_crashes + num_no_output + num_incorrect_out + num_correct))
+        assert(num_correct == self.num_correct)
+
+        self.output('num_faults\tnum_skips\tnum_bits\tcoverage\tuseful coverage\tinstructions in range\n')
+        self.output('\t'.join([str(self.num_faults),str(self.num_skips),str(self.num_bits),
+                str(self.num_correct * 1.0 / (len(self.report))),
+                str(1 - num_incorrect_out * 1.0 / len(self.report)),
+                str(self.range_count)])+'\n')
+        self.output('iteration\tinstrution #\toutput\tvalid\ttype\tPC\tinstruction\tregister affected\toriginal value\tfaulty value\tuseful\n')
+        for i in self.report:
+            self.output('\t'.join([str(x) for x in i])+'\n')
+
+    def output(self,s):
+        self.output_file.write(s)
 
     def set_range(self, func_or_addr_start, func_or_addr_end):
         self.set_start(func_or_addr_start)
@@ -509,13 +531,13 @@ class FaultInjector(Tsim):
             sys.stderr.write(str(s)+'\n')
 
 
-def run(start, end, num_faults, num_bits, num_skips, iterations, err, verbose, binary, correct):
+def run(start, end, num_faults, num_bits, num_skips, iterations, err, verbose, binary, correct, of):
 
     argv = sys.argv
 
 
     fi = FaultInjector(binary, num_faults=num_faults, num_bits=num_bits, num_skips=num_skips,
-                        data_error=err, verbose=verbose)
+                        data_error=err, verbose=verbose, output_file=of)
 
     fi.set_correct_output(correct)
     fi.set_range(start, end)
@@ -538,6 +560,7 @@ if __name__ == '__main__':
     parser.add_argument('binary', help="the compiled program to simulate")
     parser.add_argument('correct-output', help="the correct output to expect from program")
     parser.add_argument('--verbose', action='store_true')
+    parser.add_argument('-o', '--output-file', help='output csv for report. (default STDOUT)')
     parser.add_argument('-f', '--fault-count', help='number of consecutive faults to inject (default = %d)' % 1, type=int, default=1)
     parser.add_argument('-b', '--bit-flips', help='number of random bit flips to inject (if -d == 0) (default = %d)' % 1, type=int, default=1)
     parser.add_argument('-s', '--skips', help='number of instructions to skip per fault (default = %d)' % 0, type=int, default=0)
@@ -546,8 +569,9 @@ if __name__ == '__main__':
     parser.add_argument('-1', '--start', help='starting address or label to inclusively start injecting faults (default = %s)' % 'main', type=str, default='main')
     parser.add_argument('-2', '--end', help='ending address or label to exclusively end injecting faults (default = %s)' % '0x40001964', type=str, default='0x40001964')
     args = parser.parse_args()
+    of = open(args.output_file,'w+') if args.output_file else sys.stdout
     run(args.start, args.end, args.fault_count, args.bit_flips, args.skips, args.iterations, args.data, args.verbose, 
-            args.binary, getattr(args,'correct-output'))
+            args.binary, getattr(args,'correct-output'), of)
 
 
 
