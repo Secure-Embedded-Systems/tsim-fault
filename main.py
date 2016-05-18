@@ -89,7 +89,14 @@ class Tsim():
     def refresh_regs(self):
         self.write('reg\n')
         # read next 17 lines for register file
-        rf=self.read(17)
+        rf = None
+        i =0 
+        while rf is None:
+            rf=self.read(17)
+            i += 1
+            if i > 5:
+                raise IOError('register file is none')
+
         #rf = rf.splitlines()
 
         if 'LOCALS' in rf[2]:
@@ -176,7 +183,7 @@ class Tsim():
                 self.write('run\n')
                 self.read(2)
                 self.write('del '+str(bp_num)+'\n')
-            except ValueError:
+            except:
                 self.reset()
                 pass
 
@@ -233,7 +240,7 @@ class Tsim():
             elif 'IU in error mode' in out:
                 self.match = 'IU in error mode'
                 return 3
-            elif i > 10:
+            elif i > 5:
                 raise IOError('read returning None')
             elif i > 3:
                 # this is a hack
