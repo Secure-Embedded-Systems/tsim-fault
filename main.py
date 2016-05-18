@@ -22,7 +22,7 @@ class Watchdog:
         signal.alarm(0)
 
     def defaultHandler(self,n,n2):
-        os.stderr.write('WATCHDOG\n')
+        sys.stderr.write('WATCHDOG\n')
         raise self
 
 class Tsim():
@@ -164,22 +164,21 @@ class Tsim():
         #print self.read(1)[0]
 
     def run_until(self, func_or_addr):
-        func_or_addr = str(func_or_addr)
-        self.write('break '+func_or_addr+'\n')
-        #while True:
-            #try:
-        l = self.read(1)[0]
-        #print 'substring on : ', l
-        bp_num = int(l[10:l.index('at')-1])
-        self.write('run\n')
-        self.read(2)
-        self.write('del '+str(bp_num)+'\n')
-        return
-                #return
-            #except:
-                #print "RESET"
-                #self.reset()
-                #pass
+        for i in range(0,4):
+            try:
+                func_or_addr = str(func_or_addr)
+                self.write('break '+func_or_addr+'\n')
+                #while True:
+                    #try:
+                l = self.read(1)[0]
+                #print 'substring on : ', l
+                bp_num = int(l[10:l.index('at')-1])
+                self.write('run\n')
+                self.read(2)
+                self.write('del '+str(bp_num)+'\n')
+            except ValueError:
+                self.reset()
+                pass
 
     def step(self,):
         self.write('step\n')
@@ -188,30 +187,33 @@ class Tsim():
         if l is None:
             return '','',''
 
-        #if len(l[0]) < 3:
-            #l = self.read(1)
-            #if l is None: 
-                #return '','',''
+        if len(l[0]) < 3:
+            l = self.read(1)
+            if l is None: 
+                return '','',''
 
-    #try:
-        l = l[0]
-        addr = int(l[11:19+1],16)
-        if 'nop' not in l:
-            instr = l[31:l.index('\t')]
-            args = l[l.index('\t')+1:len(l)-2]
-        else:
-            instr = 'nop'
-            args = ''
+        while True:
+            try:
+                l = l[0]
+                addr = int(l[11:19+1],16)
+                if 'nop' not in l:
+                    instr = l[31:l.index('\t')]
+                    args = l[l.index('\t')+1:len(l)-2]
+                else:
+                    instr = 'nop'
+                    args = ''
 
-        self.lpc = addr
+                self.lpc = addr
 
-        return addr, instr, args
-    #except:
-        if 'Program exited normally.' in l:
-            sys.stderr.write('Program finished')
-            self.done = True
-        else:
-            raise RuntimeError('unknown string: '+l)
+                return addr, instr, args
+            except:
+                if 'Program exited normally.' in l:
+                    sys.stderr.write('Program finished')
+                    self.done = True
+                else:
+                    print ('unknown string: '+l)
+
+
 
     def cont(self,):
         self.write('cont\n')
@@ -219,8 +221,10 @@ class Tsim():
     def check_output(self,):
         out = ''
 
-        l = self.read(1)
         i = 0
+        self.write('reset\n')
+        self.write('bt\n')
+        l = self.read(1)
         while 'Program exited normally.' not in out:
             i += 1
             if l is not None:
@@ -229,20 +233,23 @@ class Tsim():
             elif 'IU in error mode' in out:
                 self.match = 'IU in error mode'
                 return 3
-            elif i > 200:
+            elif i > 10:
+                raise IOError('read returning None')
+            elif i > 3:
                 # this is a hack
-                i = 0
-                self.write('reset\n')
-                self.write('bt\n')
                 l = self.read(1)
                 if l:
                     out += l[0]
 
+
         match = ''
-        #try:
+        try:
         #print 'output:',out, 'len:',len(out)
-        match = self.output_regex.search(out).group(1)
-    #except:
+            match = self.output_regex.search(out).group(1)
+        except:
+            print 'out: ',out
+            match = self.output_regex.search(out).group(1)
+            
         #self.match = '(no output)'
         #return 2
         #raise RuntimeError('No {} tag found in output: '+out)
@@ -368,18 +375,24 @@ class FaultInjector(Tsim):
 
     def attack(self,):
         timeout_timer = Watchdog(1)
-        while True:
-            try:
-                atEndOfRange = False
-                i = 0
-                while not atEndOfRange:
-                    regi = i
-                    instri = i
-                    regs = []
-                    instr = 1
-                    faults = self.num_faults
-                    self.run_until(self.start)
-                    self.range_count = 0
+        atEndOfRange = False
+        i = 0
+        while not atEndOfRange:
+            regi = i
+            instri = i
+            regs = []
+            last_regs = []
+            instr = 1
+            ftype = 0
+            faults = self.num_faults
+            self.run_until(self.start)
+            self.range_count = 0
+            while True:
+                try:
+                    last_regs = regs[:]
+                    last_faults = faults
+                    last_regi = regi
+                    last_instr = instr
                     while self.lpc != self.end and faults > 0:
                         self.range_count += 1
                         (addr, opcode, args) = self.step()
@@ -427,36 +440,40 @@ class FaultInjector(Tsim):
                             faults -= 1
 
                         instr += 1
-                    
                     self.cont()
                     ftype = self.check_output()
-                    correct = 1
-                    if ftype == 0:
-                        self.num_correct += 1
-                        self.log('output is correct (%s)' % self.match)
-                        self.log('')
-                    else:
-                        correct = 0
-                        self.num_faulty += 1
-                        self.log('output is incorrect (%s)' % self.match)
-                        self.log('')
-                    self.add_record(self.iteration, i, self.match, correct, ftype, faulted_pc, faulted_instruction,
-                                    register_affected, origval, faultval)
-                    i += 1
-                    atEndOfRange = (self.lpc == self.end)
-
-                    self.reset()
                     timeout_timer.reset()
+                    break
+                except (Watchdog, IOError) as e:
+                    self.log('timer burned out')
+                    timeout_timer.reset()
+                    self.reset()
+                    self.run_until(self.start)
+                    wdt = False
+                    regs = last_regs[:]
+                    instr = last_instr
+                    regi = last_regi
+                    faults = last_faults
+            
+            correct = 1
+            if ftype == 0:
+                self.num_correct += 1
+                self.log('output is correct (%s)' % self.match)
+                self.log('')
+            else:
+                correct = 0
+                self.num_faulty += 1
+                self.log('output is incorrect (%s)' % self.match)
+                self.log('')
+            self.add_record(self.iteration, i, self.match, correct, ftype, faulted_pc, faulted_instruction,
+                            register_affected, origval, faultval)
+            i += 1
+            atEndOfRange = (self.lpc == self.end)
 
-                self.iteration += 1
-                break
+            self.reset()
 
-            except Watchdog as e:
-                print 'timer burned out', e
-                timeout_timer.reset()
-                self.reset()
-                pass
-            timeout_timer.stop()
+        self.iteration += 1
+        timeout_timer.stop()
 
     def log(self, s):
         if self.verbose:
