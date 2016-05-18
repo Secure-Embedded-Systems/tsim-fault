@@ -29,6 +29,7 @@ class Tsim():
     
     def __init__(self, progname):
         self.progname = progname
+        self.q = select.poll()
         self.load_tsim()
         self.done = False
         self.lpc = 0
@@ -43,11 +44,10 @@ class Tsim():
         #os.close(master)
         #os.close(slave)
 
-        master, slave = pty.openpty()
+        #master, slave = pty.openpty()
 
-        self.tsim = subprocess.Popen(['tsim-leon3',self.progname], stdin=subprocess.PIPE, stdout=slave)
+        self.tsim = subprocess.Popen(['tsim-leon3',self.progname], stdin=subprocess.PIPE, stdout=slave, close_fds=True)
         self.stdout = os.fdopen(master)
-        self.q = select.poll()
         self.q.register(self.stdout, select.POLLIN)
         self.read(20)
 
@@ -55,8 +55,17 @@ class Tsim():
     def kill(self,):
  
        #[os.close(x) for x in self.fds]
-        self.tsim.terminate()
-        os.close(self.master)
+        #self.tsim.terminate()
+        self.tsim.communicate()
+        #self.tsim.kill()
+        #self.tsim.wait()
+        #del self.master
+        #del self.slave
+        #self.tsim.stdout
+        #os.close(self.tsim.stdin)
+        #self.q.unregister(self.stdout)
+        #self.stdout.close()
+        #os.close(self.master)
         os.close(self.slave)
 
 
@@ -171,21 +180,19 @@ class Tsim():
         #print self.read(1)[0]
 
     def run_until(self, func_or_addr):
-        for i in range(0,4):
-            try:
-                func_or_addr = str(func_or_addr)
-                self.write('break '+func_or_addr+'\n')
-                #while True:
-                    #try:
-                l = self.read(1)[0]
-                #print 'substring on : ', l
-                bp_num = int(l[10:l.index('at')-1])
-                self.write('run\n')
-                self.read(2)
-                self.write('del '+str(bp_num)+'\n')
-            except:
-                self.reset()
-                pass
+        func_or_addr = str(func_or_addr)
+        self.write('break '+func_or_addr+'\n')
+        #while True:
+            #try:
+        l = self.read(1)[0]
+        #print 'substring on : ', l
+        bp_num = int(l[10:l.index('at')-1])
+        self.write('run\n')
+        self.read(2)
+        self.write('del '+str(bp_num)+'\n')
+        #self.reset()
+        #pass
+        self.step()
 
     def step(self,):
         self.write('step\n')
@@ -232,18 +239,22 @@ class Tsim():
         self.write('reset\n')
         self.write('bt\n')
         l = self.read(1)
+
+        if l is not None:
+            out += l[0]
+
         while 'Program exited normally.' not in out:
             i += 1
-            if l is not None:
-                out += l[0]
-                l = self.read(1)
-            elif 'IU in error mode' in out:
+            if 'IU in error mode' in out:
                 self.match = 'IU in error mode'
                 return 3
-            elif i > 5:
+            elif i > 1000:
                 raise IOError('read returning None')
-            elif i > 3:
+            else:
                 # this is a hack
+                self.write('reset\n')
+                self.write('bt\n')
+
                 l = self.read(1)
                 if l:
                     out += l[0]
@@ -400,7 +411,9 @@ class FaultInjector(Tsim):
                     last_faults = faults
                     last_regi = regi
                     last_instr = instr
+                    last_instri = instri
                     while self.lpc != self.end and faults > 0:
+                        timeout_timer.reset()
                         self.range_count += 1
                         (addr, opcode, args) = self.step()
                         self.log(str(addr)+" "+str(opcode) +" "+args)
@@ -451,7 +464,7 @@ class FaultInjector(Tsim):
                     ftype = self.check_output()
                     timeout_timer.reset()
                     break
-                except (Watchdog, IOError) as e:
+                except (Watchdog) as e:
                     self.log('timer burned out')
                     timeout_timer.reset()
                     self.reset()
@@ -461,7 +474,9 @@ class FaultInjector(Tsim):
                     instr = last_instr
                     regi = last_regi
                     faults = last_faults
+                    instri = last_instri
             
+            timeout_timer.stop()
             correct = 1
             if ftype == 0:
                 self.num_correct += 1
@@ -477,7 +492,14 @@ class FaultInjector(Tsim):
             i += 1
             atEndOfRange = (self.lpc == self.end)
 
-            self.reset()
+            while True:
+                try:
+                    timeout_timer.reset()
+                    self.reset()
+                    break
+                except Watchdog:
+                    print 'reset hanged'
+
 
         self.iteration += 1
         timeout_timer.stop()
@@ -499,6 +521,7 @@ def run(start, end, num_faults, num_bits, num_skips, iterations, err, verbose, b
     fi.set_range(start, end)
 
     for j in range(0,iterations): fi.attack()
+
     fi.produce_report()
 
 
