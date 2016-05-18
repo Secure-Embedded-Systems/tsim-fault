@@ -34,6 +34,8 @@ class Tsim():
         self.done = False
         self.lpc = 0
         self.output_regex = re.compile('{(.*?)}',flags=re.DOTALL)
+        self.control_faults = 0
+        self.data_faults = 0
         
 
     def load_tsim(self,):
@@ -264,9 +266,18 @@ class Tsim():
         try:
         #print 'output:',out, 'len:',len(out)
             match = self.output_regex.search(out).group(1)
-        except:
-            print 'out: ',out
-            match = self.output_regex.search(out).group(1)
+        except AttributeError:
+            self.match = '(no output)'
+            return 2
+
+        if 'DATA' in match:
+            self.match = '(no output)'
+            self.data_faults += 1
+            return 2
+        elif 'CONTROL' in match:
+            self.control_faults += 1
+            self.match = '(no output)'
+            return 2
             
         #self.match = '(no output)'
         #return 2
@@ -377,10 +388,16 @@ class FaultInjector(Tsim):
         assert(len(self.report) == (num_crashes + num_no_output + num_incorrect_out + num_correct))
         assert(num_correct == self.num_correct)
 
-        self.output('num_faults\tnum_skips\tnum_bits\tcoverage\tuseful coverage\tinstructions in range\n')
+        self.output('num_faults\tnum_skips\tnum_bits\tcoverage\tuseful coverage\tcorrect\tno output\tincorrect\tcrash\tdetected control\t detected data\tinstructions in range\n')
         self.output('\t'.join([str(self.num_faults),str(self.num_skips),str(self.num_bits),
                 str(self.num_correct * 1.0 / (len(self.report))),
                 str(1 - num_incorrect_out * 1.0 / len(self.report)),
+                str(num_correct * 1.0 / len(self.report)),
+                str(num_no_output * 1.0 / len(self.report)),
+                str(num_incorrect_out * 1.0 / len(self.report)),
+                str(num_crashes * 1.0 / len(self.report)),
+                str(self.control_faults * 1.0 / (self.control_faults + self.data_faults)),
+                str(self.data_faults * 1.0 / (self.control_faults + self.data_faults)),
                 str(self.range_count)])+'\n')
         self.output('iteration\tinstrution #\toutput\tvalid\ttype\tPC\tinstruction\tregister affected\toriginal value\tfaulty value\tuseful\n')
         for i in self.report:
