@@ -347,8 +347,7 @@ class FaultInjector(Tsim):
         self.data_error = kwargs.get('data_error',0)
         self.verbose = kwargs.get('verbose',False)
         self.output_file = kwargs.get('output_file',sys.stdout)
-        
-
+        self.consecutive_bits = kwargs.get('consecutive_bits',1)
 
         self.report = []
         self.coverage = 0
@@ -421,10 +420,14 @@ class FaultInjector(Tsim):
 
     def get_error(self, val):
         fval = val
+
         if self.data_error == 0:
             for j in range(0,self.num_bits):
-                ra = random.randint(0,31)
-                fval = fval ^ (1<<ra)
+                ra = random.randint(0,32 - self.consecutive_bits)
+                print self.consecutive_bits
+                for i in range(0, self.consecutive_bits):
+                    fval = fval ^ (1<<ra)
+                    ra += 1
             return fval
         else:
             return (val ^ self.data_error)
@@ -505,9 +508,14 @@ class FaultInjector(Tsim):
                     break
                 except (Watchdog) as e:
                     self.log('timer burned out')
-                    timeout_timer.reset()
-                    self.reset()
-                    self.run_until(self.start)
+                    while True:
+                        try:
+                            timeout_timer.reset()
+                            self.reset()
+                            self.run_until(self.start)
+                            break
+                        except Watchdog:
+                            pass
                     wdt = False
                     regs = last_regs[:]
                     instr = last_instr
@@ -548,13 +556,13 @@ class FaultInjector(Tsim):
             sys.stderr.write(str(s)+'\n')
 
 
-def run(start, end, num_faults, num_bits, num_skips, iterations, err, verbose, binary, correct, of):
+def run(start, end, num_faults, num_bits, cflips, num_skips, iterations, err, verbose, binary, correct, of):
 
     argv = sys.argv
 
 
     fi = FaultInjector(binary, num_faults=num_faults, num_bits=num_bits, num_skips=num_skips,
-                        data_error=err, verbose=verbose, output_file=of)
+            data_error=err, verbose=verbose, output_file=of, consecutive_bits = cflips)
 
     fi.set_correct_output(correct)
     fi.set_range(start, end)
@@ -580,14 +588,18 @@ if __name__ == '__main__':
     parser.add_argument('-o', '--output-file', help='output csv for report. (default STDOUT)')
     parser.add_argument('-f', '--fault-count', help='number of consecutive faults to inject (default = %d)' % 1, type=int, default=1)
     parser.add_argument('-b', '--bit-flips', help='number of random bit flips to inject (if -d == 0) (default = %d)' % 1, type=int, default=1)
+    parser.add_argument('-c', '--consecutive-flips',
+            help='number of bits to flip consecutively in a data word (if -d == 0) (default = %d)' % 1, type=int, default=1)
     parser.add_argument('-s', '--skips', help='number of instructions to skip per fault (default = %d)' % 0, type=int, default=0)
     parser.add_argument('-i', '--iterations', help='iterations to repeat simulation (default = %d)' % 1, type=int, default=1)
     parser.add_argument('-d', '--data', help='data to XOR for induced fault error (0 means random bit) (default = %d)' % 0, type=int, default=0)
-    parser.add_argument('-1', '--start', help='starting address or label to inclusively start injecting faults (default = %s)' % 'main', type=str, default='main')
-    parser.add_argument('-2', '--end', help='ending address or label to exclusively end injecting faults (default = %s)' % '0x40001964', type=str, default='0x40001964')
+    parser.add_argument('-1', '--start', help='starting address or label to inclusively start injecting faults (default = %s)' % 'main', 
+            type=str, default='main')
+    parser.add_argument('-2', '--end', help='ending address or label to exclusively end injecting faults (default = %s)' % '0x40001964',
+            type=str, default='0x40001964')
     args = parser.parse_args()
     of = open(args.output_file,'w+') if args.output_file else sys.stdout
-    run(args.start, args.end, args.fault_count, args.bit_flips, args.skips, args.iterations, args.data, args.verbose, 
+    run(args.start, args.end, args.fault_count, args.bit_flips, args.consecutive_flips, args.skips, args.iterations, args.data, args.verbose, 
             args.binary, getattr(args,'correct-output'), of)
 
 
