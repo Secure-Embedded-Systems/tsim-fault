@@ -55,21 +55,8 @@ class Tsim():
 
 
     def kill(self,):
- 
-       #[os.close(x) for x in self.fds]
-        #self.tsim.terminate()
         self.tsim.communicate()
-        #self.tsim.kill()
-        #self.tsim.wait()
-        #del self.master
-        #del self.slave
-        #self.tsim.stdout
-        #os.close(self.tsim.stdin)
-        #self.q.unregister(self.stdout)
-        #self.stdout.close()
-        #os.close(self.master)
         os.close(self.slave)
-
 
 
     def read(self,lines):
@@ -348,6 +335,7 @@ class FaultInjector(Tsim):
         self.verbose = kwargs.get('verbose',False)
         self.output_file = kwargs.get('output_file',sys.stdout)
         self.consecutive_bits = kwargs.get('consecutive_bits',1)
+        self.rbyte = kwargs.get('byte',False)
 
         self.report = []
         self.coverage = 0
@@ -422,13 +410,19 @@ class FaultInjector(Tsim):
     def get_error(self, val):
         fval = val
 
+        bitsize = 32
+        additional_shift = 0
+        if self.rbyte:
+            bitsize = 8
+            additional_shift = ([0,8,16,24])[random.randint(0,3)]
+
         if self.data_error == 0:
             for j in range(0,self.num_bits):
-                ra = random.randint(0,32 - self.consecutive_bits)
-                print self.consecutive_bits
+                ra = random.randint(0,bitsize - self.consecutive_bits)
                 for i in range(0, self.consecutive_bits):
-                    fval = fval ^ (1<<ra)
+                    fval = fval ^ (1<<(ra + additional_shift))
                     ra += 1
+
             return fval
         else:
             return (val ^ self.data_error)
@@ -557,13 +551,13 @@ class FaultInjector(Tsim):
             sys.stderr.write(str(s)+'\n')
 
 
-def run(start, end, num_faults, num_bits, cflips, num_skips, iterations, err, verbose, binary, correct, of):
+def run(start, end, num_faults, num_bits, cflips, num_skips, iterations, err, verbose, binary, correct, of, byte):
 
     argv = sys.argv
 
 
     fi = FaultInjector(binary, num_faults=num_faults, num_bits=num_bits, num_skips=num_skips,
-            data_error=err, verbose=verbose, output_file=of, consecutive_bits = cflips)
+            data_error=err, verbose=verbose, output_file=of, consecutive_bits = cflips, byte=byte)
 
     fi.set_correct_output(correct)
     fi.set_range(start, end)
@@ -589,6 +583,7 @@ if __name__ == '__main__':
     parser.add_argument('-o', '--output-file', help='output csv for report. (default STDOUT)')
     parser.add_argument('-f', '--fault-count', help='number of consecutive faults to inject (default = %d)' % 1, type=int, default=1)
     parser.add_argument('-b', '--bit-flips', help='number of random bit flips to inject (if -d == 0) (default = %d)' % 1, type=int, default=1)
+    parser.add_argument('-B', '--byte', help='Inject the bit flips confined to a random byte in word (default False)' , action='store_true')
     parser.add_argument('-c', '--consecutive-flips',
             help='number of bits to flip consecutively in a data word (if -d == 0) (default = %d)' % 1, type=int, default=1)
     parser.add_argument('-s', '--skips', help='number of instructions to skip per fault (default = %d)' % 0, type=int, default=0)
@@ -601,7 +596,7 @@ if __name__ == '__main__':
     args = parser.parse_args()
     of = open(args.output_file,'w+') if args.output_file else sys.stdout
     run(args.start, args.end, args.fault_count, args.bit_flips, args.consecutive_flips, args.skips, args.iterations, args.data, args.verbose, 
-            args.binary, getattr(args,'correct-output'), of)
+            args.binary, getattr(args,'correct-output'), of, args.byte)
 
 
 
