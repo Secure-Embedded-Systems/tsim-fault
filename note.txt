@@ -1,0 +1,2 @@
+What conor did is just change the data inside register.
+We need to change the entire opcode.

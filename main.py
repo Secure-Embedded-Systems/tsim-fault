@@ -26,7 +26,7 @@ class Watchdog:
         raise self
 
 class Tsim():
-    
+
     def __init__(self, progname):
         self.progname = progname
         self.q = select.poll()
@@ -36,7 +36,7 @@ class Tsim():
         self.output_regex = re.compile('{(.*?)}',flags=re.DOTALL)
         self.control_faults = 0
         self.data_faults = 0
-        
+
 
     def load_tsim(self,):
         master, slave = pty.openpty()
@@ -51,7 +51,8 @@ class Tsim():
         self.tsim = subprocess.Popen(['tsim-leon3',self.progname], stdin=subprocess.PIPE, stdout=slave, close_fds=True)
         self.stdout = os.fdopen(master)
         self.q.register(self.stdout, select.POLLIN)
-        self.read(20)
+        self.read(21)
+        #self.read(19)
 
 
     def kill(self,):
@@ -69,8 +70,9 @@ class Tsim():
                 return None
 
         for i in range(0,lines):
-
+            #print i
             l = self.stdout.readline()
+            #print l
             #print '<',l
             #print l[:len(l)-1]
             while l[0] == '#':
@@ -88,7 +90,7 @@ class Tsim():
         self.write('reg\n')
         # read next 17 lines for register file
         rf = None
-        i =0 
+        i =0
         while rf is None:
             rf=self.read(17)
             i += 1
@@ -169,30 +171,40 @@ class Tsim():
         #print self.read(1)[0]
 
     def run_until(self, func_or_addr):
+       # print "run_until"
         func_or_addr = str(func_or_addr)
         self.write('break '+func_or_addr+'\n')
         #while True:
             #try:
         l = self.read(1)[0]
+        #print 1
+        #print l
+
+        #sys.exit(0)
         #print 'substring on : ', l
         bp_num = int(l[10:l.index('at')-1])
         self.write('run\n')
-        self.read(2)
+ #       print 2
+        #print self.read(2)
+        self.read(3)
         self.write('del '+str(bp_num)+'\n')
         #self.reset()
         #pass
         self.step()
 
+
     def step(self,):
         self.write('step\n')
         l = self.read(1)
+#        print 3
+#        print l
 
         if l is None:
             return '','',''
 
         if len(l[0]) < 3:
             l = self.read(1)
-            if l is None: 
+            if l is None:
                 return '','',''
 
         while True:
@@ -214,6 +226,7 @@ class Tsim():
                     sys.stderr.write('Program finished')
                     self.done = True
                 else:
+#                    debug = 0
                     print ('unknown string: '+l)
 
 
@@ -265,13 +278,12 @@ class Tsim():
             self.control_faults += 1
             self.match = '(no output)'
             return 2
-            
+
         #self.match = '(no output)'
         #return 2
         #raise RuntimeError('No {} tag found in output: '+out)
 
         self.match = match
-
         if match == self.correct_output:
             return 0
         return 1
@@ -281,7 +293,7 @@ class Tsim():
         num = s.count('%')
         for _ in range(0,num):
             i = s.index('%')
-            if s[i+1] in 'gilo': 
+            if s[i+1] in 'gilo':
                 regs.append(s[i+1:i+3])
                 s = s[i+2:]
             elif s[i+1:i+3] in ['fp','sp']:
@@ -301,7 +313,7 @@ class Tsim():
 
 
 
-                
+
     def reset(self,):
         self.kill()
         self.load_tsim()
@@ -309,15 +321,22 @@ class Tsim():
 
 
     def resolve_label(self, label):
+        #print label
+#        return int(label)
+
         try:
             return int(label)
         except:
             self.write('break '+label + '\n')
             l = self.read(1)[0]
+            #print l
+            #l = self.read(2)[1]
             self.log(l)
+            #print l
             bp_num = int(l[10:l.index('at')-1])
             addr = int(l[l.index(':')-8:l.index(':')],16)
             self.write('del '+str(bp_num)+'\n')
+            #print addr
             return addr
 
 
@@ -399,9 +418,11 @@ class FaultInjector(Tsim):
         self.set_end(func_or_addr_end)
 
     def set_start(self, func_or_addr):
+        #print func_or_addr
         self.start = func_or_addr
 
     def set_end(self, func_or_addr):
+        #print func_or_addr
         self.end = self.resolve_label(func_or_addr)
 
     def set_correct_output(self,out):
@@ -440,6 +461,7 @@ class FaultInjector(Tsim):
             instr = 1
             ftype = 0
             faults = self.num_faults
+            #print self.start
             self.run_until(self.start)
             self.range_count = 0
             while True:
@@ -453,7 +475,7 @@ class FaultInjector(Tsim):
                         timeout_timer.reset()
                         self.range_count += 1
                         (addr, opcode, args) = self.step()
-                        self.log(str(addr)+" "+str(opcode) +" "+args)
+                        self.log(str(hex(addr))+" "+str(opcode) +" "+args)
                         faulted_instruction = ''
                         faulted_pc = 0
 
@@ -475,11 +497,13 @@ class FaultInjector(Tsim):
                             self.log('pc -> '+' '+ str(npc))
 
                         new_regs = self.get_registers(args)
+                        print new_regs
                         regs += new_regs
+                        print regs
 
                         if self.num_bits and len(regs) > regi:
                             val = self.read_reg(regs[regi])
-                            
+
                             # inject a bit flip
                             fval = self.get_error(val)
                             self.write_reg(regs[regi], fval)
@@ -507,6 +531,8 @@ class FaultInjector(Tsim):
                         try:
                             timeout_timer.reset()
                             self.reset()
+                            #print debug
+                            #print self.read(1)
                             self.run_until(self.start)
                             break
                         except Watchdog:
@@ -517,7 +543,7 @@ class FaultInjector(Tsim):
                     regi = last_regi
                     faults = last_faults
                     instri = last_instri
-            
+
             timeout_timer.stop()
             correct = 1
             if ftype == 0:
@@ -589,13 +615,13 @@ if __name__ == '__main__':
     parser.add_argument('-s', '--skips', help='number of instructions to skip per fault (default = %d)' % 0, type=int, default=0)
     parser.add_argument('-i', '--iterations', help='iterations to repeat simulation (default = %d)' % 1, type=int, default=1)
     parser.add_argument('-d', '--data', help='data to XOR for induced fault error (0 means random bit) (default = %d)' % 0, type=int, default=0)
-    parser.add_argument('-1', '--start', help='starting address or label to inclusively start injecting faults (default = %s)' % 'main', 
+    parser.add_argument('-1', '--start', help='starting address or label to inclusively start injecting faults (default = %s)' % 'main',
             type=str, default='main')
     parser.add_argument('-2', '--end', help='ending address or label to exclusively end injecting faults (default = %s)' % '0x40001964',
             type=str, default='0x40001964')
     args = parser.parse_args()
     of = open(args.output_file,'w+') if args.output_file else sys.stdout
-    run(args.start, args.end, args.fault_count, args.bit_flips, args.consecutive_flips, args.skips, args.iterations, args.data, args.verbose, 
+    run(args.start, args.end, args.fault_count, args.bit_flips, args.consecutive_flips, args.skips, args.iterations, args.data, args.verbose,
             args.binary, getattr(args,'correct-output'), of, args.byte)
 
 
