@@ -178,7 +178,7 @@ class Tsim():
             #try:
         l = self.read(1)[0]
         #print 1
-        #print l
+        print l
 
         #sys.exit(0)
         #print 'substring on : ', l
@@ -331,7 +331,7 @@ class Tsim():
             l = self.read(1)[0]
             #print l
             #l = self.read(2)[1]
-            self.log(l)
+            #self.log(l)
             #print l
             bp_num = int(l[10:l.index('at')-1])
             addr = int(l[l.index(':')-8:l.index(':')],16)
@@ -362,6 +362,8 @@ class FaultInjector(Tsim):
         self.num_correct = 0
         self.iteration = 0
 
+        self.faultreport = [] #mo: contain the fault type of each opcode
+
     def add_record(self, iteration, instr_num, output, faulty, ftype, addr, instru, reg_affected, origval, faultyval):
         """
             ftype:
@@ -376,11 +378,31 @@ class FaultInjector(Tsim):
 
         self.report.append([iteration, instr_num, output, faulty, ftype, addr, instru, reg_affected, origval, faultyval, useful])
 
-    def produce_report(self,):
+    def produce_report(self,opcode):
         num_crashes = 0
         num_no_output = 0
         num_incorrect_out = 0
         num_correct = 0
+        fault_effect = ''
+        assert(len(opcode)==len(self.faultreport))
+        self.output('opcode\t\tfault effect\n')
+        for i in range(0,len(opcode)):
+            if self.faultreport[i] == 3:
+                num_crashes += 1
+                fault_effect = 'processor crashed'
+            elif self.faultreport[i]  == 2:
+                num_no_output += 1
+                fault_effect = 'no output'
+            elif self.faultreport[i]  == 1:
+                num_incorrect_out += 1
+                fault_effect = 'incorrect output'
+            elif self.faultreport[i]  == 0:
+                num_correct += 1
+                fault_effect = 'correct output'
+
+            self.output(opcode[i] + '\t' + fault_effect + '\n')
+
+        '''
         for i in self.report:
             if i[4] == 3:
                 num_crashes += 1
@@ -409,6 +431,7 @@ class FaultInjector(Tsim):
         self.output('iteration\tinstrution #\toutput\tvalid\ttype\tPC\tinstruction\tregister affected\toriginal value\tfaulty value\tuseful\n')
         for i in self.report:
             self.output('\t'.join([str(x) for x in i])+'\n')
+        '''
 
     def output(self,s):
         self.output_file.write(s)
@@ -449,7 +472,38 @@ class FaultInjector(Tsim):
             return (val ^ self.data_error)
 
 
-    def attack(self,):
+    def attack(self,op):
+        new_opcode = '0x'+ str(op)
+        self.write('wmem '+ self.start + " " + str(new_opcode) + '\n')
+        timeout_timer = Watchdog(1)
+        #self.run_until(self.start)
+        #(addr, opcode, args) = self.step()
+        try:
+            timeout_timer.reset()
+            self.write('run\n')
+            ftype = self.check_output()
+            timeout_timer.reset()
+        except (Watchdog) as e:
+        #    ftype = -1
+            self.log('timer burned out')
+
+        timeout_timer.stop()
+        correct = 1
+        if ftype == 0:
+            self.num_correct += 1
+            self.log('output is correct (%s)' % self.match)
+            self.log('')
+        else:
+            correct = 0
+            self.num_faulty += 1
+            self.log('output is incorrect (%s)' % self.match)
+            self.log('')
+
+        self.faultreport.append(ftype)
+       # self.add_record(self.iteration, i, self.match, correct, ftype, faulted_pc, faulted_instruction,
+        #                register_affected, origval, faultval)
+
+        '''
         timeout_timer = Watchdog(1)
         atEndOfRange = False
         i = 0
@@ -571,13 +625,13 @@ class FaultInjector(Tsim):
 
         self.iteration += 1
         timeout_timer.stop()
-
+        '''
     def log(self, s):
         if self.verbose:
             sys.stderr.write(str(s)+'\n')
 
 
-def run(start, end, num_faults, num_bits, cflips, num_skips, iterations, err, verbose, binary, correct, of, byte):
+def run(start, end, num_faults, num_bits, cflips, num_skips, iterations, err, verbose, binary, correct, of, byte, infile):
 
     argv = sys.argv
 
@@ -588,9 +642,27 @@ def run(start, end, num_faults, num_bits, cflips, num_skips, iterations, err, ve
     fi.set_correct_output(correct)
     fi.set_range(start, end)
 
-    for j in range(0,iterations): fi.attack()
+    index = 0
+    fn = infile
+    F = open(fn,'r')
+    file_string = F.read()
+    F.close()
+    opcode = []
+    file_split = file_string.split("\n")
+    for row in file_split:
+        if not row:
+            break
+        if (index==0):
+            index = index + 1
+            continue
+        opcode.append(row)
+        index = index + 1
 
-    fi.produce_report()
+    #for j in range(0,iterations):
+    for op in opcode:
+        fi.attack(op)
+
+    fi.produce_report(opcode)
 
 
 
@@ -619,10 +691,11 @@ if __name__ == '__main__':
             type=str, default='main')
     parser.add_argument('-2', '--end', help='ending address or label to exclusively end injecting faults (default = %s)' % '0x40001964',
             type=str, default='0x40001964')
+    parser.add_argument('-I', '--infile', help='input opcode file (default = %s)' % 'opcode.txt', type=str, default='opcode.txt')
     args = parser.parse_args()
     of = open(args.output_file,'w+') if args.output_file else sys.stdout
     run(args.start, args.end, args.fault_count, args.bit_flips, args.consecutive_flips, args.skips, args.iterations, args.data, args.verbose,
-            args.binary, getattr(args,'correct-output'), of, args.byte)
+            args.binary, getattr(args,'correct-output'), of, args.byte, args.infile)
 
 
 
